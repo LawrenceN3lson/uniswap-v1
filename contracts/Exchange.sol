@@ -2,21 +2,64 @@
 pragma solidity ^0.8.0;
 
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 
-contract Exchange {
+contract Exchange is ERC20 {
     // 只允许一种代币与 ether 交换
     address public tokenAddress;
 
-    constructor(address _token) {
+    constructor(address _token) ERC20("UNISWAP-V1-LIKE", "UNI-V1") {
         require(_token != address(0), "invalid token address");
 
         tokenAddress = _token;
     }
 
     // 添加流动性
-    function addLiquidity(uint256 _tokenAmount) public payable {
-        IERC20 token = IERC20(tokenAddress);
-        token.transferFrom(msg.sender, address(this), _tokenAmount);
+    function addLiquidity(
+        uint256 _tokenAmount
+    ) public payable returns (uint256) {
+        if (getReserve() == 0) {
+            IERC20 token = IERC20(tokenAddress);
+            token.transferFrom(msg.sender, address(this), _tokenAmount);
+            uint256 liquidity = address(this).balance;
+            _mint(msg.sender, liquidity);
+            return liquidity;
+        } else {
+            // 后续新增流动性则需要按照当前的数量比例，等比增加
+            // 保证价格在添加流动性前后一致
+            uint256 ethReserve = address(this).balance - msg.value;
+            uint256 tokenReserve = getReserve();
+            // solidity不支持浮点运算，所以运算顺序非常重要，提倡先乘后除原则
+            // 如果 msg.value * (tokenReserve / ethReserve) 的写法会产生计算误差
+            uint256 tokenAmount = (msg.value * tokenReserve) / ethReserve;
+
+            // 保证流动性按照当前比例注入，如果token少于应有数量则不能执行
+            require(_tokenAmount >= tokenAmount, "insufficient token amount");
+
+            IERC20 token = IERC20(tokenAddress);
+            token.transferFrom(msg.sender, address(this), tokenAmount);
+
+            // 根据注入的eth流动性 与 合约eth数量 的比值分发 LP token
+            uint256 liquidity = (totalSupply() * msg.value) / ethReserve;
+            _mint(msg.sender, liquidity); //  ERC20._mint() 向流动性提供者发送 LP token
+
+            return liquidity;
+        }
+    }
+
+    function removeLiquidity(
+        uint256 _amount
+    ) public returns (uint256, uint256) {
+        uint256 ethAmount = (address(this).balance * _amount) / totalSupply();
+        uint256 tokenAmount = (getReserve() * _amount) / totalSupply();
+
+        // ERC20._burn() 销毁LP
+        _burn(msg.sender, _amount);
+        // 返还用户质押的 ETH 和 token
+        payable(msg.sender).transfer(ethAmount);
+        IERC20(tokenAddress).transfer(msg.sender, tokenAmount);
+
+        return (ethAmount, tokenAmount);
     }
 
     // 获取交易所的 token 储备
@@ -81,6 +124,12 @@ contract Exchange {
     ) private pure returns (uint256) {
         require(inputReserve > 0 && outputReserve > 0, "invalid reserves");
 
-        return (inputAmount * outputReserve) / (inputReserve + inputAmount);
+        // 收取1%的手续费
+        // solidity 不支持浮点运算，所以分子和分母同时 × 100，提高除法运算精度
+        uint256 inputAmountWithFee = inputAmount * 99; // 100 - 1 扣除手续费
+        uint256 numerator = inputAmountWithFee * outputReserve;
+        uint256 denominator = (inputReserve * 100) + inputAmountWithFee;
+
+        return numerator / denominator;
     }
 }
