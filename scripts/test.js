@@ -2,7 +2,7 @@ const math = require("mathjs");
 
 // 定义变量和等式
 const eq1 = math.parse("x * y = 100");
-const eq2 = math.parse("x / y = 1 / 1.5");
+const eq2 = math.parse("x / y = 1 / 150");
 
 // 解等式
 const solution = math.solve([eq1, eq2], ["x", "y"]);
